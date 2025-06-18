@@ -9,23 +9,34 @@ env:
 
 jobs:
   test:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: kubsu
+          POSTGRES_PASSWORD: kubsu
+          POSTGRES_DB: kubsu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       
       - name: Build and test
         run: |
           docker build -t test-image .
-          docker-compose up -d db
-          sleep 10
           docker run --rm --network host \
             -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
             test-image python -m pytest -v tests/
-          docker-compose down
 
-  deploy:
+  build:
     needs: test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
@@ -37,27 +48,35 @@ jobs:
           docker build -t ${{ env.IMAGE_NAME }}:latest .
           docker push ${{ env.IMAGE_NAME }}:latest
 
+  deploy:
+    needs: build
+    runs-on: self-hosted
+    steps:
       - name: Deploy to server
+        env:
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
         run: |
-          docker save ${{ env.IMAGE_NAME }}:latest | gzip > app.tar.gz
+          # Создаем SSH ключ
+          echo "${{ secrets.DEPLOY_KEY }}" > deploy_key
+          chmod 600 deploy_key
           
-          echo "${{ secrets.DEPLOY_KEY }}" > key.pem
-          chmod 600 key.pem
+          # Запускаем ssh-agent и добавляем ключ с passphrase
+          eval $(ssh-agent -s)
+          echo "${{ secrets.SSH_PASSPHRASE }}" | SSH_ASKPASS_REQUIRE=never ssh-add deploy_key
           
-          scp -i key.pem -o StrictHostKeyChecking=no \
-            app.tar.gz ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/
-          
-          ssh -i key.pem -o StrictHostKeyChecking=no \
+          # Деплой на сервер
+          ssh -p $SSH_PORT -o StrictHostKeyChecking=no \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
           
-          gunzip -c /tmp/app.tar.gz | podman load
+          podman pull ${{ env.IMAGE_NAME }}:latest
           podman stop python-crud || true
           podman rm python-crud || true
           podman run -d --name python-crud --network host \
             -e DATABASE_URL="${{ secrets.PROD_DATABASE_URL }}" \
             ${{ env.IMAGE_NAME }}:latest
           
-          rm /tmp/app.tar.gz
           EOF
           
-          rm key.pem app.tar.gz
+          # Очищаем
+          ssh-agent -k
+          rm deploy_key

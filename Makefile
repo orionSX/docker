@@ -8,7 +8,7 @@ help: ## Показать справку
 build: ## Собрать образ
 	docker build -t $(IMAGE_NAME) .
 
-test: ## Запустить тесты
+test: ## Запустить тесты локально
 	docker-compose up -d db
 	@sleep 5
 	docker run --rm --network host \
