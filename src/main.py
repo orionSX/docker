@@ -8,20 +8,36 @@ from src.database import init_db, get_db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("python-iskr")
+    print("Starting KubSU API v2.0 - Changes detected!")
     # Startup
     await init_db()
     yield
     # Shutdown (if needed)
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="KubSU API",
+    description="CRUD API for user management",
+    version="2.0.0",
+    lifespan=lifespan
+)
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint for Docker/Podman healthcheck"""
-    return {"status": "healthy", "service": "kubsu-api"}
+    return {
+        "status": "healthy", 
+        "service": "kubsu-api",
+        "version": "2.0.0",
+        "message": "All systems operational!"
+    }
+
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"message": "Welcome to KubSU API v2.0", "docs": "/docs"}
 
 
 @app.post("/users/", response_model=schemas.User)
