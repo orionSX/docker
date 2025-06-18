@@ -53,30 +53,17 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Deploy to server
-        env:
-          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
-        run: |
-          # Создаем SSH ключ
-          echo "${{ secrets.DEPLOY_KEY }}" > deploy_key
-          chmod 600 deploy_key
-          
-          # Запускаем ssh-agent и добавляем ключ с passphrase
-          eval $(ssh-agent -s)
-          echo "${{ secrets.SSH_PASSPHRASE }}" | SSH_ASKPASS_REQUIRE=never ssh-add deploy_key
-          
-          # Деплой на сервер
-          ssh -p $SSH_PORT -o StrictHostKeyChecking=no \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
-          
-          podman pull ${{ env.IMAGE_NAME }}:latest
-          podman stop python-crud || true
-          podman rm python-crud || true
-          podman run -d --name python-crud --network host \
-            -e DATABASE_URL="${{ secrets.PROD_DATABASE_URL }}" \
-            ${{ env.IMAGE_NAME }}:latest
-          
-          EOF
-          
-          # Очищаем
-          ssh-agent -k
-          rm deploy_key
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            podman pull ${{ env.IMAGE_NAME }}:latest
+            podman stop python-crud || true
+            podman rm python-crud || true
+            podman run -d --name python-crud --network host \
+              -e DATABASE_URL="${{ secrets.PROD_DATABASE_URL }}" \
+              ${{ env.IMAGE_NAME }}:latest
