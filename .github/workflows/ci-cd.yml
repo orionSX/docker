@@ -63,7 +63,7 @@ jobs:
           script: |
             podman pull ${{ env.IMAGE_NAME }}:latest
             podman stop python-crud || true
-            podman rm python-crud || true
-            podman run -d --name python-crud --network host \
+            podman rm --force python-crud || true
+            podman run -d --name python-crud --network host --replace \
               -e DATABASE_URL="${{ secrets.PROD_DATABASE_URL }}" \
               ${{ env.IMAGE_NAME }}:latest
