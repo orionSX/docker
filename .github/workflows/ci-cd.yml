@@ -61,9 +61,29 @@ jobs:
           passphrase: ${{ secrets.SSH_PASSPHRASE }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
+            echo "🔍 Checking PostgreSQL connection..."
+            nc -zv localhost 5432 || echo "❌ PostgreSQL not accessible on localhost:5432"
+            
+            echo "🔄 Pulling latest image..."
             podman pull ${{ env.IMAGE_NAME }}:latest
+            
+            echo "🛑 Stopping old container..."
             podman stop python-crud || true
             podman rm --force python-crud || true
+            
+            echo "🚀 Starting new container..."
             podman run -d --name python-crud --network host --replace \
               -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
               ${{ env.IMAGE_NAME }}:latest
+            
+            echo "⏳ Waiting 5 seconds..."
+            sleep 5
+            
+            echo "📋 Container status:"
+            podman ps -a --filter name=python-crud
+            
+            echo "📝 Container logs:"
+            podman logs python-crud --tail 20
+            
+            echo "🔍 Health check:"
+            curl -f http://localhost:8022/health || echo "❌ Health check failed"
