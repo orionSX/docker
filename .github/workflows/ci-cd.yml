@@ -4,6 +4,9 @@ on:
   push:
     branches: ["main", "master"]
 
+env:
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/python-crud
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -23,7 +26,7 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Build and test
         run: |
           docker build -t test-image .
@@ -31,12 +34,24 @@ jobs:
             -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
             test-image python -m pytest -v tests/
 
-  deploy:
+  build:
     needs: test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:latest .
+          docker push ${{ env.IMAGE_NAME }}:latest
+
+  deploy:
+    needs: build
+    runs-on: self-hosted
+    steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -46,50 +61,29 @@ jobs:
           passphrase: ${{ secrets.SSH_PASSPHRASE }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
-            echo "🧹 Cleaning up old deployment..."
-            rm -rf /tmp/kubsu-deploy
-            mkdir -p /tmp/kubsu-deploy
+            echo "🔍 Checking PostgreSQL connection..."
+            nc -zv localhost 5432 || echo "❌ PostgreSQL not accessible on localhost:5432"
             
-      - name: Copy files to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          source: "src/,tests/,Dockerfile,docker-compose.prod.yml,pyproject.toml,init.sql"
-          target: "/tmp/kubsu-deploy/"
-          
-      - name: Deploy with compose
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
-          passphrase: ${{ secrets.SSH_PASSPHRASE }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          script: |
-            cd /tmp/kubsu-deploy
+            echo "🔄 Pulling latest image..."
+            podman pull ${{ env.IMAGE_NAME }}:latest
             
-            echo "🗂️ Creating data directory..."
-            sudo mkdir -p /var/lib/kubsu/postgres_data
-            sudo chown -R $(whoami):$(whoami) /var/lib/kubsu/ || true
+            echo "🛑 Stopping old container..."
+            podman stop python-crud || true
+            podman rm --force python-crud || true
             
-            echo "🛑 Stopping old services..."
-            podman-compose -f docker-compose.prod.yml down || docker-compose -f docker-compose.prod.yml down || true
+            echo "🚀 Starting new container..."
+            podman run -d --name python-crud --network host --replace \
+              -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
+              ${{ env.IMAGE_NAME }}:latest
             
-            echo "🚀 Starting services with compose..."
-            podman-compose -f docker-compose.prod.yml up -d --build || docker-compose -f docker-compose.prod.yml up -d --build
+            echo "⏳ Waiting 5 seconds..."
+            sleep 5
             
-            echo "⏳ Waiting 15 seconds for services to start..."
-            sleep 15
+            echo "📋 Container status:"
+            podman ps -a --filter name=python-crud
             
-            echo "📋 Services status:"
-            podman-compose -f docker-compose.prod.yml ps || docker-compose -f docker-compose.prod.yml ps
-            
-            echo "📝 App logs:"
-            podman-compose -f docker-compose.prod.yml logs app --tail 10 || docker-compose -f docker-compose.prod.yml logs app --tail 10
+            echo "📝 Container logs:"
+            podman logs python-crud --tail 20
             
             echo "🔍 Health check:"
             curl -f http://localhost:8022/health || echo "❌ Health check failed"
