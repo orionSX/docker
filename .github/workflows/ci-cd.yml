@@ -26,7 +26,7 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Build and test
         run: |
           docker build -t test-image .
@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Login to Docker Hub
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
@@ -65,5 +65,5 @@ jobs:
             podman stop python-crud || true
             podman rm --force python-crud || true
             podman run -d --name python-crud --network host --replace \
-              -e DATABASE_URL="${{ secrets.PROD_DATABASE_URL }}" \
+              -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
               ${{ env.IMAGE_NAME }}:latest
