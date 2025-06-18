@@ -45,8 +45,11 @@ jobs:
 
       - name: Build and push
         run: |
-          echo "🏗️ Building Docker image..."
-          docker build -t ${{ env.IMAGE_NAME }}:latest \
+          echo "🏗️ Building Docker image from repository..."
+          echo "📋 Commit: ${{ github.sha }}"
+          echo "📅 Date: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          
+          docker build --no-cache -t ${{ env.IMAGE_NAME }}:latest \
             --label "org.opencontainers.image.source=${{ github.repositoryUrl }}" \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             --label "org.opencontainers.image.created=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
@@ -97,8 +100,15 @@ jobs:
             echo "🔍 Checking PostgreSQL connection..."
             nc -zv localhost 5432 || echo "❌ PostgreSQL not accessible on localhost:5432"
             
-            echo "🔄 Pulling latest app image..."
-            podman pull ${{ env.IMAGE_NAME }}:latest
+            echo "🧹 Cleaning up old app images..."
+            podman rmi ${{ env.IMAGE_NAME }}:latest || true
+            
+            echo "🔄 Force pulling latest app image..."
+            podman pull --disable-compression ${{ env.IMAGE_NAME }}:latest
+            
+            echo "📋 Image info:"
+            podman inspect ${{ env.IMAGE_NAME }}:latest --format '{{.Created}}' || echo "No image info"
+            podman inspect ${{ env.IMAGE_NAME }}:latest --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' || echo "No revision info"
             
             echo "🛑 Stopping old app container..."
             podman stop python-crud || true
@@ -111,8 +121,8 @@ jobs:
               --label "deployment.date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
               ${{ env.IMAGE_NAME }}:latest
             
-            echo "⏳ Waiting 5 seconds..."
-            sleep 5
+            echo "⏳ Waiting 8 seconds for app to start..."
+            sleep 8
             
             echo "📋 Container status:"
             podman ps -a --filter name=python-crud
@@ -123,6 +133,9 @@ jobs:
             
             echo "🔍 Health check:"
             curl -f http://localhost:8022/health || echo "❌ Health check failed"
+            
+            echo "🔍 Root endpoint check:"
+            curl -f http://localhost:8022/ || echo "❌ Root endpoint failed"
             
             echo "✅ Deployment completed!"
             echo "🏷️ Deployed app: ${{ env.IMAGE_NAME }}:${{ github.sha }}"
