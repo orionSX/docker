@@ -1,4 +1,3 @@
-
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';

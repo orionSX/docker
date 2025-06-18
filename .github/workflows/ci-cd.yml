@@ -1,166 +1,63 @@
-name: CI/CD Pipeline
+name: CI/CD
 
 on:
   push:
-    branches: ["master", "main"]
-  pull_request:
-    branches: ["master", "main"]
+    branches: ["main", "master"]
 
 env:
-  IMAGE_NAME: kubsu/python-crud
-  REGISTRY: docker.io
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/python-crud
 
 jobs:
   test:
-    name: Run Tests
     runs-on: self-hosted
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build test image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          target: final
-          tags: ${{ env.IMAGE_NAME }}:test
-          load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Start test database
+      - uses: actions/checkout@v4
+      
+      - name: Build and test
         run: |
-          docker-compose --profile test up -d db
-          
-      - name: Wait for database
-        run: |
-          timeout 60 bash -c 'until docker-compose --profile test exec -T db pg_isready -U kubsu -d kubsu; do sleep 2; done'
-
-      - name: Run tests
-        run: |
+          docker build -t test-image .
+          docker-compose up -d db
+          sleep 10
           docker run --rm --network host \
             -e DATABASE_URL="postgresql+psycopg://kubsu:kubsu@localhost:5432/kubsu" \
-            -e PYTHONPATH=/app \
-            ${{ env.IMAGE_NAME }}:test \
-            python -m pytest -v tests/ --tb=short
-
-      - name: Stop test services
-        if: always()
-        run: |
-          docker-compose --profile test down -v
-
-  build-and-push:
-    name: Build and Push to Registry
-    needs: test
-    runs-on: self-hosted
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    outputs:
-      image-digest: ${{ steps.build.outputs.digest }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ secrets.DOCKERHUB_USERNAME }}/python-crud
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          target: final
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
+            test-image python -m pytest -v tests/
+          docker-compose down
 
   deploy:
-    name: Deploy to Server
-    needs: build-and-push
+    needs: test
     runs-on: self-hosted
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - name: Deploy to server via SSH
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-          IMAGE_FULL_NAME: ${{ env.REGISTRY }}/${{ secrets.DOCKERHUB_USERNAME }}/python-crud:latest
+      - uses: actions/checkout@v4
+      
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build and push
         run: |
-          # Сохраняем Docker образ в tar файл
-          echo "Saving Docker image..."
-          docker pull $IMAGE_FULL_NAME
-          docker save $IMAGE_FULL_NAME | gzip > app-image.tar.gz
+          docker build -t ${{ env.IMAGE_NAME }}:latest .
+          docker push ${{ env.IMAGE_NAME }}:latest
+
+      - name: Deploy to server
+        run: |
+          docker save ${{ env.IMAGE_NAME }}:latest | gzip > app.tar.gz
           
-          # Создаем временный SSH ключ
-          echo "$DEPLOY_KEY" > /tmp/deploy_key
-          chmod 600 /tmp/deploy_key
+          echo "${{ secrets.DEPLOY_KEY }}" > key.pem
+          chmod 600 key.pem
           
-          # Копируем образ на сервер
-          echo "Copying image to server..."
-          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no \
-            app-image.tar.gz $DEPLOY_USER@$DEPLOY_HOST:/tmp/
+          scp -i key.pem -o StrictHostKeyChecking=no \
+            app.tar.gz ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/
           
-          # Выполняем деплой на сервере
-          echo "Deploying on server..."
-          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
-            $DEPLOY_USER@$DEPLOY_HOST << 'EOF'
+          ssh -i key.pem -o StrictHostKeyChecking=no \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
           
-          # Загружаем образ в Podman
-          gunzip -c /tmp/app-image.tar.gz | podman load
-          
-          # Останавливаем старый контейнер
+          gunzip -c /tmp/app.tar.gz | podman load
           podman stop python-crud || true
           podman rm python-crud || true
-          
-          # Запускаем новый контейнер
-          podman run -d \
-            --name python-crud \
-            --network host \
+          podman run -d --name python-crud --network host \
             -e DATABASE_URL="${{ secrets.PROD_DATABASE_URL }}" \
-            -e ENVIRONMENT=production \
-            --restart unless-stopped \
-            ${{ env.REGISTRY }}/${{ secrets.DOCKERHUB_USERNAME }}/python-crud:latest
+            ${{ env.IMAGE_NAME }}:latest
           
-          # Проверяем что контейнер запустился
-          sleep 10
-          if podman ps | grep -q python-crud; then
-            echo "✅ Deployment successful!"
-            podman logs python-crud --tail 20
-          else
-            echo "❌ Deployment failed!"
-            podman logs python-crud --tail 50
-            exit 1
-          fi
-          
-          # Очищаем временные файлы
-          rm -f /tmp/app-image.tar.gz
+          rm /tmp/app.tar.gz
           EOF
           
-          # Очищаем локальные временные файлы
-          rm -f /tmp/deploy_key app-image.tar.gz
-          
-          echo "🚀 Deployment completed successfully!"
+          rm key.pem app.tar.gz
